@@ -1,0 +1,98 @@
+---
+name: Build and Release
+on:
+  push:
+    # 1️⃣ Create a release whenever a new tag like `v0.0.0 is pushed.
+    tags:
+      - "v*"
+
+  # 2️⃣ Create a release manually from GitHub's user interface.
+  workflow_dispatch:
+    inputs:
+      release_name:
+        description: "Release Version (e.g. v0.0.0)"
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - run: rustup update
+      - run: rustup target add wasm32-unknown-unknown
+      - run: cargo version
+
+      # 3️⃣ Set up env vars that will be used in the workflow.
+      - name: Set up env vars
+        run: |
+          echo "WASM_FILE=target/wasm32-unknown-unknown/release/hello.wasm" >> $GITHUB_ENV
+          if [ -n "${{ github.event.inputs.release_name }}" ]; then
+            echo "TAG_NAME=${{ github.event.inputs.release_name }}" >> $GITHUB_ENV
+          else
+            echo "TAG_NAME=${{ github.ref_name }}" >> $GITHUB_ENV
+          fi
+      # 4️⃣ Set up the Stellar CLI.
+      - uses: stellar/stellar-cli@v22.5.0
+        with:
+          version: 22.5.0
+
+      # 5️⃣ Build the contract and mark the WASM with the current repository.
+      - name: Build contract
+        run: |
+          stellar contract build \
+            --meta home_domain=example.com \
+            --meta source_repo=github:${{ github.repository }}
+          stellar contract optimize --wasm ${{ env.WASM_FILE }}
+          file=${{ env.WASM_FILE }}
+          cp "${file%.*}.optimized.wasm" ${{ env.WASM_FILE }}
+      # 6️⃣ Upload the WASM file to the artifacts.
+      - name: Upload to Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: hello.wasm
+          path: ${{ env.WASM_FILE }}
+
+      # 7️⃣ Build the attestation for the wasm file.
+      - name: Build Attestation for Release
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-name: hello.wasm
+          subject-path: ${{ env.WASM_FILE }}
+
+      # 8️⃣ Make a new release.
+      - name: Make a new Release
+        id: release
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const response = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: '${{ env.TAG_NAME }}',
+              target_commitish: '${{ github.sha }}',
+              make_latest: 'true'
+            });
+            const { data } = response;
+            core.setOutput('release_id', data.id);
+      # 9️⃣ Upload the wasm file to the release.
+      - name: Upload to Release
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            await github.rest.repos.uploadReleaseAsset({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: '${{ steps.release.outputs.release_id }}',
+              name: path.basename('${{ env.WASM_FILE }}'),
+              data: fs.readFileSync('${{ env.WASM_FILE }}'),
+            });
