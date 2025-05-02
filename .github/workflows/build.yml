@@ -24,6 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+      - run: rustup override set 1.84.0
       - run: rustup update
       - run: rustup target add wasm32v1-none
       - run: cargo version
